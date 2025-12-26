@@ -2,38 +2,58 @@ const fs = require("fs");
 const crypto = require("crypto");
 
 const PROFILE_FILE = "profiles.json";
-let cache = {};
+const LOCK_FILE = "profiles.lock";
 
-if (fs.existsSync(PROFILE_FILE)) {
-  try {
-    cache = JSON.parse(fs.readFileSync(PROFILE_FILE, "utf8"));
-  } catch { cache = {}; }
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-function save() {
-  fs.writeFileSync(PROFILE_FILE, JSON.stringify(cache, null, 2));
+// ===== File Lock =====
+async function acquireLock() {
+  while (true) {
+    try {
+      fs.writeFileSync(LOCK_FILE, process.pid.toString(), { flag: "wx" });
+      return;
+    } catch {
+      await sleep(5);
+    }
+  }
 }
 
-function shortUA(ua) {
-  if (!ua) return "Unknown UA";
-  if (ua.length < 40) return ua;
-  return ua.substring(0, 35) + " ... " + ua.slice(-15);
+function releaseLock() {
+  try { fs.unlinkSync(LOCK_FILE); } catch {}
 }
 
-function getProfile(wallet, proxy, ua) {
-  const key = wallet.toLowerCase();
+// ===== Disk Identity =====
+async function getProfile(wallet, proxy, ua) {
+  await acquireLock();
 
-  if (!cache[key]) {
-    const uuid = crypto.randomUUID();
-    const device = proxy ? proxy.split("@").pop() : "LOCAL";
-    cache[key] = { wallet, device, ua, uuid };
-    save();
+  let data = {};
+  if (fs.existsSync(PROFILE_FILE)) {
+    try { data = JSON.parse(fs.readFileSync(PROFILE_FILE)); } catch {}
   }
 
-  const p = cache[key];
+  const key = wallet.toLowerCase();
+
+  if (!data[key]) {
+    data[key] = {
+      wallet,
+      uuid: crypto.randomUUID(),
+      device: proxy ? proxy.split("@").pop() : "LOCAL",
+      ua
+    };
+    fs.writeFileSync(PROFILE_FILE, JSON.stringify(data, null, 2));
+  }
+
+  const profile = data[key];
+
+  releaseLock();
+
   return {
-    ...p,
-    identity: `${p.wallet} | ${p.device} | ${shortUA(p.ua)}`
+    wallet: profile.wallet,
+    uuid: profile.uuid,
+    device: profile.device,
+    ua: profile.ua
   };
 }
 
